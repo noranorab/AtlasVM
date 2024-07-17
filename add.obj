@@ -1,0 +1,18 @@
+.section .data
+hello_msg:
+    .asciz "Hello, world!"
+
+.section .text
+.globl _start
+_start:
+    # Write the message to stdout
+    mov $1, %eax    # sys_write system call
+    mov $1, %ebx    # stdout file descriptor
+    mov $hello_msg, %ecx
+    mov $14, %edx   # length of the message
+    int $0x80
+
+    # Exit the program
+    mov $1, %eax    # sys_exit system call
+    xor %ebx, %ebx  # exit status 0
+    int $0x80
