@@ -58,7 +58,7 @@ int main() {
 
     // Read message from client
     int valread = read(new_socket, buffer, BUFFER_SIZE);
-    printf("Received: %s\n", buffer);
+    printf("Received from client: %d\n", valread);
 
     // Send a response to the client
     send(new_socket, hello, strlen(hello), 0);

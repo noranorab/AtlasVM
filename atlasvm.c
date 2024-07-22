@@ -4,9 +4,12 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <openssl/sha.h>
+#include <stddef.h>
+#include "pow.h"
 
 /* Memory */
-
 #define MEMORY_MAX (1 << 8)
 uint8_t memory[MEMORY_MAX]; /* 256 locations */
 
@@ -14,9 +17,7 @@ uint8_t memory[MEMORY_MAX]; /* 256 locations */
 int sockfd;
 
 /* Registers */
-
-enum 
-{
+enum {
     R_PC,  /* Program counter */
     R_ACC, /* Accumulator */
     R_COUNT /* Total number of registers */
@@ -25,16 +26,14 @@ enum
 uint8_t reg[R_COUNT];
 
 /* Function Declarations */
-void read_image_file(FILE* file);
-uint8_t swap8(uint8_t x);
+uint8_t mem_read(uint16_t address);
 
 /* Instruction set */
-
 enum {
-    OP_ADD, /* Add value at memory address to ACC */
-    OP_SUB, /* Subtract value at memory address from ACC */
-    OP_MUL, /* Multiply ACC by value at the memory address */
-    OP_DIV, /* Divide ACC by value at memory address (remainder ignored) */
+    OP_ADD = 0x00,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV,
     OP_AND,
     OP_OR,
     OP_XOR,
@@ -44,56 +43,36 @@ enum {
     OP_JZ,
     OP_JNZ,
     OP_IN,
-    OP_OUT, 
+    OP_OUT,
     OP_HALT,
     OP_NET_SEND,  // New opcode for sending data
-    OP_NET_RECV   // New opcode for receiving data
+    OP_NET_RECV,  // New opcode for receiving data
+    OP_POW = 0x11, // Example: Unique opcode for POW
 };
 
-void read_image_file(FILE* file){
-    uint8_t origin;
-    fread(&origin, sizeof(origin), 1, file);
-    origin = swap8(origin);
-    uint8_t* p = memory + origin;
-    size_t max_read = MEMORY_MAX - origin;
-    size_t read = fread(p, sizeof(uint8_t), max_read, file);
-    while (read-- > 0) {
-        *p = swap8(*p);
-        ++p;
-    }
-
-    // Print memory content after loading
-    printf("Memory content after loading:\n");
-    for (size_t i = 0; i < MEMORY_MAX; i++) {
-        printf("0x%02X ", memory[i]);
-        if ((i + 1) % 16 == 0) printf("\n");
-    }
-}
-
-int read_image(const char* image_path)
-{
+int read_image(const char* image_path) {
     FILE* file = fopen(image_path, "rb");
-    if (!file) { return 0; }
-    read_image_file(file);
-    fclose(file);
-    return 1;
-}
+    if (!file) {
+        perror("Failed to open image file");
+        return 0;
+    }
 
-uint8_t swap8(uint8_t x)
-{
-    return (x << 4) | (x >> 4);
+    fread(memory, sizeof(uint8_t), MEMORY_MAX, file);
+    fclose(file);
+
+    return 1;
 }
 
 uint8_t mem_read(uint16_t address) {
     return memory[address];
 }
 
-void ADD(uint8_t operand){
+void ADD(uint8_t operand) {
     uint8_t value = mem_read(operand);
     reg[R_ACC] += value;
 }
 
-void SUB(uint8_t operand){
+void SUB(uint8_t operand) {
     uint8_t value = mem_read(operand);
     reg[R_ACC] -= value;
 }
@@ -105,39 +84,39 @@ void MUL(uint8_t operand) {
 
 void DIV(uint8_t operand) {
     uint8_t value = mem_read(operand);
-    if (value != 0){
+    if (value != 0) {
         reg[R_ACC] /= value;
     }
 }
 
 void AND(uint8_t operand) {
     uint8_t value = mem_read(operand);
-    reg[R_ACC] &= value; 
+    reg[R_ACC] &= value;
 }
 
 void OR(uint8_t operand) {
     uint8_t value = mem_read(operand);
-    reg[R_ACC] |= value; 
+    reg[R_ACC] |= value;
 }
 
 void XOR(uint8_t operand) {
     uint8_t value = mem_read(operand);
-    reg[R_ACC] ^= value; 
+    reg[R_ACC] ^= value;
 }
 
-void LOAD(uint8_t operand){
+void LOAD(uint8_t operand) {
     reg[R_ACC] = mem_read(operand);
 }
 
-void STORE(uint8_t operand){
+void STORE(uint8_t operand) {
     memory[operand] = reg[R_ACC];
 }
 
-void JUMP(uint8_t operand){
+void JUMP(uint8_t operand) {
     reg[R_PC] = operand;
 }
 
-void JZ(){
+void JZ() {
     if (reg[R_ACC] == 0) {
         uint8_t offset = mem_read(reg[R_PC]);
         reg[R_PC] = (uint8_t)(reg[R_PC] + (int8_t)offset);
@@ -146,7 +125,7 @@ void JZ(){
     }
 }
 
-void JNZ(){
+void JNZ() {
     if (reg[R_ACC] != 0) {
         uint8_t offset = mem_read(reg[R_PC]);
         reg[R_PC] = (uint8_t)(reg[R_PC] + (int8_t)offset);
@@ -155,17 +134,17 @@ void JNZ(){
     }
 }
 
-void IN(){
+void IN() {
     int num;
     scanf("%d", &num);
     reg[R_ACC] = (uint8_t) num;
 }
 
-void OUT(){
+void OUT() {
     printf("%d\n", reg[R_ACC]);
 }
 
-int HALT(){
+int HALT() {
     return 0;
 }
 
@@ -187,6 +166,7 @@ void NET_INIT() {
     // Connect to server
     if (connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) != 0) {
         perror("Connection to server failed");
+        close(sockfd);
         exit(1);
     }
 }
@@ -195,34 +175,39 @@ void NET_SEND(uint8_t operand) {
     uint8_t value = memory[operand];
     if (send(sockfd, &value, sizeof(value), 0) == -1) {
         perror("Send failed");
+        close(sockfd);
         exit(1);
     }
+    printf("Sent to server: %d\n", value);
 }
 
 void NET_RECV(uint8_t operand) {
     uint8_t buffer;
     if (recv(sockfd, &buffer, sizeof(buffer), 0) == -1) {
         perror("Receive failed");
+        close(sockfd);
         exit(1);
     }
     memory[operand] = buffer;
 }
 
+/* POW algo */
+void POW(uint8_t operand, uint32_t difficulty) {
+    uint8_t block[MEMORY_MAX + sizeof(uint32_t)];
+    memcpy(block, memory, MEMORY_MAX);
+    int nonce = compute_pow(block, MEMORY_MAX, difficulty);
+    memcpy(memory + operand, &nonce, sizeof(nonce));
+    printf("Computed nonce: %d\n", nonce);
+}
 
-
-
-int main(int argc, const char* argv[])
-{
-    if (argc < 2)
-    {
+int main(int argc, const char* argv[]) {
+    if (argc < 2) {
         printf("atlasvm [image-file1] ...\n");
         exit(2);
     }
 
-    for (int j = 1; j < argc; ++j)
-    {
-        if (!read_image(argv[j]))
-        {
+    for (int j = 1; j < argc; ++j) {
+        if (!read_image(argv[j])) {
             printf("failed to load image: %s\n", argv[j]);
             exit(1);
         }
@@ -241,8 +226,7 @@ int main(int argc, const char* argv[])
 
         printf("PC: 0x%02X, Instruction: 0x%02X, Op: 0x%X, Operand: 0x%X, ACC: 0x%02X\n", reg[R_PC], instr, op, operand, reg[R_ACC]);
 
-        switch(op)
-        {
+        switch(op) {
             case OP_ADD:
                 ADD(operand);
                 break;
@@ -287,6 +271,15 @@ int main(int argc, const char* argv[])
                 break;
             case OP_HALT:
                 running = HALT();
+                break;
+            case OP_NET_SEND:
+                NET_SEND(operand);
+                break;
+            case OP_NET_RECV:
+                NET_RECV(operand);
+                break;
+            case OP_POW:
+                POW(operand, 4);  // Set difficulty to 4 for testing
                 break;
             default:
                 printf("Unknown instruction: 0x%02X\n", instr);
